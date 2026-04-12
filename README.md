@@ -1,5 +1,7 @@
 # Smart Fan Bridge
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 MQTT bridge that seamlessly controls Tuya WiFi ceiling fans through Zigbee wall switches. Uses raw ZCL commands to bypass Tuya TS0004 firmware limitations, TinyTuya for local LAN fan control, and TCP monitoring for physical switch detection.
 
 ## The Problem
