@@ -1,0 +1,13 @@
+[Unit]
+Description=Smart Fan Bridge
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/path/to/start_bridge.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

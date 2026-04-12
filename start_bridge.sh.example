@@ -1,0 +1,27 @@
+#!/bin/bash
+# Smart Fan Bridge - Example startup script
+# Copy this to start_bridge.sh and fill in your values
+
+export MQTT_HOST=localhost
+export HOMEY_URL=http://YOUR_HOMEY_IP:4859
+export HOMEY_TOKEN=your-homey-api-bearer-token
+
+export VIRTUAL_FAN_DEVICE_ID=your-virtual-fan-homey-device-id
+export TUYA_DEVICE_ID=your-tuya-device-id
+export TUYA_IP=your-fan-ip-address
+export TUYA_KEY='your-tuya-local-key'
+export TUYA_VERSION=3.3
+
+export Z2M_SWITCH_IEEE=0xYOUR_SWITCH_IEEE_ADDRESS
+export Z2M_SWITCH_NWK=YOUR_NETWORK_ADDRESS
+export Z2M_L2_ENDPOINT=2
+
+export DEFAULT_FAN_SPEED=3
+export TUYA_BOOT_WAIT=5.0
+export TUYA_RETRY_INTERVAL=5.0
+export TUYA_MAX_RETRIES=8
+export FAN_MONITOR_INTERVAL=3.0
+export SEQUENCE_GRACE_PERIOD=10.0
+export POLL_INTERVAL=1.0
+
+python3 -u smart_fan_bridge.py
