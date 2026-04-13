@@ -1,0 +1,44 @@
+[
+  {
+    "name": "Office Fan",
+    "virtual_fan_id": "1c7bc5bf-c945-4982-8fe1-35f022d555e8",
+    "virtual_light_id": "d0324105-254f-409e-8978-f811495bbb98",
+    "fan_motor_id": "b9de207d-2bf4-4759-8037-58de3cd9dbbf",
+    "tuya_device_id": "bff3dbe507cd4046b8k2mx",
+    "tuya_ip": "192.168.30.162",
+    "tuya_key": "qX^Lp)j`xqWw{Qv7",
+    "tuya_version": 3.3,
+    "z2m_ieee": "0xa4c13886289e5594",
+    "z2m_nwk": 52415,
+    "z2m_endpoint": 2,
+    "default_speed": 3
+  },
+  {
+    "name": "Guest Room Fan",
+    "virtual_fan_id": "c970c9f2-bcfe-49c5-a965-f3f66a4e340a",
+    "virtual_light_id": "a750ccd7-3ef6-41da-b674-df3172a77d96",
+    "fan_motor_id": "5050b31f-b4e0-4e00-8a95-9665582de359",
+    "tuya_device_id": "bfc568ebdd6dad3313thoi",
+    "tuya_ip": "192.168.30.168",
+    "tuya_key": "*e$KKK7_@g`Wzg8$",
+    "tuya_version": 3.3,
+    "z2m_ieee": "0xa4c138ed8301e891",
+    "z2m_nwk": 17500,
+    "z2m_endpoint": 1,
+    "default_speed": 3
+  },
+  {
+    "name": "Master Bedroom Fan",
+    "virtual_fan_id": "6db05510-bb2d-48ae-86dc-eebd70058fcf",
+    "virtual_light_id": null,
+    "fan_motor_id": "1c0a2870-3fae-4582-ac36-aa9aeebc0b9d",
+    "tuya_device_id": "bfa073c47cd105fd44zpxp",
+    "tuya_ip": "192.168.30.115",
+    "tuya_key": "YF/JP+OrCHXS|]Tu",
+    "tuya_version": 3.3,
+    "z2m_ieee": "0xa4c138d9a39caeb8",
+    "z2m_nwk": 46349,
+    "z2m_endpoint": 1,
+    "default_speed": 3
+  }
+]
