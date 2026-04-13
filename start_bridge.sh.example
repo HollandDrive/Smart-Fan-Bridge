@@ -7,6 +7,8 @@ export HOMEY_URL=http://YOUR_HOMEY_IP:4859
 export HOMEY_TOKEN=your-homey-api-bearer-token
 
 export VIRTUAL_FAN_DEVICE_ID=your-virtual-fan-homey-device-id
+export VIRTUAL_LIGHT_DEVICE_ID=your-virtual-light-homey-device-id
+export FAN_MOTOR_DEVICE_ID=your-tuya-fan-homey-device-id
 export TUYA_DEVICE_ID=your-tuya-device-id
 export TUYA_IP=your-fan-ip-address
 export TUYA_KEY='your-tuya-local-key'

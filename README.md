@@ -31,8 +31,17 @@ Homey (Virtual Fan Device) → state changes to ON
 Smart Fan Bridge (polls Homey API every 1s)
     ↓
     ├─ Raw ZCL ON → Zigbee switch endpoint 2 (L2 relay clicks on)
-    ├─ Wait 5s for Tuya WiFi module to boot
+    ├─ Wait for Tuya WiFi module to boot
     └─ TinyTuya → Fan ON + Speed 3 (direct LAN, <100ms)
+
+Google Home → "Turn on the office fan light"
+    ↓
+Homey (Virtual Light Device) → state changes to ON
+    ↓
+Smart Fan Bridge
+    ↓
+    ├─ Ensure L2 is on (raw ZCL if needed)
+    └─ TinyTuya → Light ON (DP 15)
 
 Physical button press → L2 off → Fan loses power
     ↓
@@ -40,8 +49,14 @@ Smart Fan Bridge (TCP monitor every 3s)
     ↓
 Fan IP:6668 unreachable (3 consecutive failures = ~9s)
     ↓
-Reset Virtual Fan to OFF → Next voice command works again
+Reset Virtual Fan + Virtual Light to OFF → Voice commands work again
 ```
+
+### Key behaviors
+
+- **Fan and light are independent** — light stays on when fan motor is off, and vice versa
+- **L2 stays powered** if either fan or light is active — only cuts L2 when both are off
+- **Brightness and color temperature** sync from the Homey Tuya device to TinyTuya automatically
 
 ## Requirements
 
@@ -66,9 +81,14 @@ You'll need a [Tuya IoT developer account](https://iot.tuya.com) (free) to pull 
 
 In the Zigbee2MQTT frontend, go to your switch device → About → look for the network address (nwkAddr). You'll also need the IEEE address.
 
-### 3. Create a Virtual Fan device in Homey
+### 3. Create Virtual Devices in Homey
 
-Enable Virtual Devices under Homey → Settings → Experiments, then create a Virtual Socket with `virtualClass: fan`. Note its device ID from the Homey API.
+Enable Virtual Devices under Homey → Settings → Experiments, then create:
+
+1. **Virtual Socket** named "Office Fan" with `virtualClass: fan` — for Google Home fan on/off
+2. **Virtual Socket** named "Office Fan Light" with `virtualClass: light` — for Google Home light on/off
+
+Note both device IDs from the Homey API. You'll also need the Tuya fan device ID from Homey (the real Tuya device, not the virtual ones) for brightness/color temp syncing.
 
 ### 4. Configure environment variables
 
@@ -79,6 +99,8 @@ export MQTT_HOST=localhost
 export HOMEY_URL=http://YOUR_HOMEY_IP:4859
 export HOMEY_TOKEN=your-homey-api-token
 export VIRTUAL_FAN_DEVICE_ID=your-virtual-fan-device-id
+export VIRTUAL_LIGHT_DEVICE_ID=your-virtual-light-device-id
+export FAN_MOTOR_DEVICE_ID=your-tuya-fan-device-id-in-homey
 export TUYA_DEVICE_ID=your-tuya-device-id
 export TUYA_IP=your-fan-ip
 export TUYA_KEY=your-tuya-local-key
@@ -110,7 +132,9 @@ Sync devices in Google Home. The virtual fan will appear as a controllable devic
 | `HOMEY_URL` | Homey API URL | `http://192.168.30.10:4859` |
 | `HOMEY_TOKEN` | Homey API bearer token | — |
 | `VIRTUAL_FAN_DEVICE_ID` | Homey virtual fan device ID | — |
-| `TUYA_DEVICE_ID` | Tuya device ID | — |
+| `VIRTUAL_LIGHT_DEVICE_ID` | Homey virtual light device ID | — |
+| `FAN_MOTOR_DEVICE_ID` | Homey Tuya fan device ID (for dim/colortemp) | — |
+| `TUYA_DEVICE_ID` | Tuya device ID (from tinytuya wizard) | — |
 | `TUYA_IP` | Fan's LAN IP address | — |
 | `TUYA_KEY` | Tuya local encryption key | — |
 | `TUYA_VERSION` | Tuya protocol version | `3.3` |
