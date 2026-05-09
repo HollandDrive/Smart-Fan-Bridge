@@ -32,7 +32,7 @@ TUYA_BOOT_WAIT = float(os.environ.get("TUYA_BOOT_WAIT", "3.0"))
 TUYA_RETRY_INTERVAL = float(os.environ.get("TUYA_RETRY_INTERVAL", "3.0"))
 TUYA_MAX_RETRIES = int(os.environ.get("TUYA_MAX_RETRIES", "8"))
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "1.0"))
-FAN_MONITOR_INTERVAL = float(os.environ.get("FAN_MONITOR_INTERVAL", "3.0"))
+FAN_MONITOR_INTERVAL = float(os.environ.get("FAN_MONITOR_INTERVAL", "2.0"))
 SEQUENCE_GRACE_PERIOD = float(os.environ.get("SEQUENCE_GRACE_PERIOD", "10.0"))
 FAN_OFFLINE_THRESHOLD = int(os.environ.get("FAN_OFFLINE_THRESHOLD", "3"))
 
@@ -70,10 +70,47 @@ class FanController:
         self.name = config["name"]
         self.mqtt_client = mqtt_client
 
-        # Homey device IDs
-        self.virtual_fan_id = config["virtual_fan_id"]
-        self.virtual_light_id = config.get("virtual_light_id")  # None if no light
+        # Mode: "combined" = Arjan fan with onoff+dim; "split" = legacy virtualsocket layout
+        self.mode = config.get("mode", "split")
         self.fan_motor_id = config.get("fan_motor_id")
+
+        # Fan side
+        if self.mode == "combined":
+            self.virtual_fan_id = config["arjan_id"]
+            self.cap_fan_onoff = "onoff"
+            # 'fan_speed' triggers Google's FanSpeed trait (better voice phrasing than 'dim')
+            self.cap_fan_dim = config.get("fan_speed_capability", "fan_speed")
+        else:
+            self.virtual_fan_id = config["virtual_fan_id"]
+            self.cap_fan_onoff = "onoff"
+            self.cap_fan_dim = None  # split mode has no fan-speed capability on the virtual
+
+        # Light side
+        arjan_light_id = config.get("arjan_light_id")
+        if arjan_light_id:
+            # Separate Arjan device for light (preferred — Google Home recognizes it)
+            self.virtual_light_id = arjan_light_id
+            self.cap_light_onoff = "onoff"
+            self.cap_light_dim = "dim"
+            self.cap_light_temp = "light_temperature"
+            self.light_details_device_id = arjan_light_id
+            self.has_light = True
+        elif self.mode == "combined":
+            # Light as sub-caps on the combined Arjan (Homey-app only — Google ignores sub-caps)
+            self.virtual_light_id = config["arjan_id"]
+            self.cap_light_onoff = "onoff.light"
+            self.cap_light_dim = "dim.light"
+            self.cap_light_temp = "light_temperature"
+            self.light_details_device_id = config["arjan_id"]
+            self.has_light = True
+        else:
+            # Legacy split: virtualsocket light + read brightness/colortemp from Tuya driver
+            self.virtual_light_id = config.get("virtual_light_id")
+            self.cap_light_onoff = "onoff"
+            self.cap_light_dim = "dim"
+            self.cap_light_temp = "light_temperature"
+            self.light_details_device_id = self.fan_motor_id
+            self.has_light = bool(self.virtual_light_id)
 
         # TinyTuya
         self.tuya_id = config["tuya_device_id"]
@@ -90,6 +127,7 @@ class FanController:
 
         # State tracking
         self.fan_state = None
+        self.fan_dim_state = None
         self.light_state = None
         self.dim_state = None
         self.colortemp_state = None
@@ -97,9 +135,10 @@ class FanController:
         self.sequence_end_time = 0
         self.fan_was_online = None
         self.fan_offline_count = 0
+        self.last_fan_speed_write = 0  # debounce reverse-sync after we write DP3
         self.lock = threading.Lock()
 
-        log.info(f"[{self.name}] Tuya: {self.tuya_ip}, Z2M: {self.z2m_ieee} ep:{self.z2m_endpoint}")
+        log.info(f"[{self.name}] mode={self.mode}, Tuya: {self.tuya_ip}, Z2M: {self.z2m_ieee} ep:{self.z2m_endpoint}")
 
     # --- Raw ZCL ---
     def send_raw_zcl(self, command):
@@ -130,12 +169,34 @@ class FanController:
             result = d.set_multiple_values({"1": True, "3": speed})
             d.close()
             if result and "Error" not in str(result):
+                self.last_fan_speed_write = time.time()
                 log.info(f"[{self.name}] TinyTuya: fan ON speed {speed}")
                 return True
             return False
         except Exception as e:
             log.error(f"[{self.name}] TinyTuya fan ON error: {e}")
             return False
+
+    def tuya_set_fan_speed(self, speed):
+        """Set fan speed (DP3) without touching power."""
+        try:
+            d = self._get_device()
+            result = d.set_value(3, speed)
+            d.close()
+            if result and "Error" not in str(result):
+                self.last_fan_speed_write = time.time()
+                log.info(f"[{self.name}] TinyTuya: fan speed → {speed}")
+                return True
+            return False
+        except Exception as e:
+            log.error(f"[{self.name}] TinyTuya fan speed error: {e}")
+            return False
+
+    def dim_to_speed(self, dim):
+        """Map Homey dim 0..1 to Tuya DP3 1..6. dim=None → default_speed."""
+        if dim is None:
+            return self.default_speed
+        return max(1, min(6, int(round(dim * 6))))
 
     def tuya_fan_off(self):
         try:
@@ -192,14 +253,16 @@ class FanController:
             return False
 
     def tuya_set_colortemp(self, homey_temp):
-        raw = max(0, min(100, int(round(homey_temp * 100))))
+        # Tuya FP9805 DP17 polarity is inverted vs Homey light_temperature:
+        # Homey 0.0 = cold, 1.0 = warm. Tuya 0 = warm, 100 = cold. Invert.
+        raw = max(0, min(100, int(round((1 - homey_temp) * 100))))
         if raw % 2 != 0: raw -= 1
         try:
             d = self._get_device()
             result = d.set_value(17, raw)
             d.close()
             if result and "Error" not in str(result):
-                log.info(f"[{self.name}] TinyTuya: colortemp {raw}")
+                log.info(f"[{self.name}] TinyTuya: colortemp homey={homey_temp:.2f} → DP17={raw}")
                 return True
             return False
         except Exception as e:
@@ -227,36 +290,44 @@ class FanController:
     def get_virtual_fan_state(self):
         result = self._homey_get(self.virtual_fan_id)
         if result and "capabilitiesObj" in result:
-            return result["capabilitiesObj"].get("onoff", {}).get("value")
+            return result["capabilitiesObj"].get(self.cap_fan_onoff, {}).get("value")
+        return None
+
+    def get_virtual_fan_dim(self):
+        if not self.cap_fan_dim:
+            return None
+        result = self._homey_get(self.virtual_fan_id)
+        if result and "capabilitiesObj" in result:
+            return result["capabilitiesObj"].get(self.cap_fan_dim, {}).get("value")
         return None
 
     def set_virtual_fan(self, on):
-        self._homey_set_cap(self.virtual_fan_id, "onoff", on)
+        self._homey_set_cap(self.virtual_fan_id, self.cap_fan_onoff, on)
         log.info(f"[{self.name}] Virtual fan → {'ON' if on else 'OFF'}")
 
     def get_virtual_light_state(self):
-        if not self.virtual_light_id:
+        if not self.has_light:
             return None
         result = self._homey_get(self.virtual_light_id)
         if result and "capabilitiesObj" in result:
-            return result["capabilitiesObj"].get("onoff", {}).get("value")
+            return result["capabilitiesObj"].get(self.cap_light_onoff, {}).get("value")
         return None
 
     def set_virtual_light(self, on):
-        if not self.virtual_light_id:
+        if not self.has_light:
             return
-        self._homey_set_cap(self.virtual_light_id, "onoff", on)
+        self._homey_set_cap(self.virtual_light_id, self.cap_light_onoff, on)
         log.info(f"[{self.name}] Virtual light → {'ON' if on else 'OFF'}")
 
     def get_light_details(self):
-        if not self.fan_motor_id:
+        if not self.has_light or not self.light_details_device_id:
             return None
-        result = self._homey_get(self.fan_motor_id)
+        result = self._homey_get(self.light_details_device_id)
         if result and "capabilitiesObj" in result:
             caps = result["capabilitiesObj"]
             return {
-                "dim": caps.get("dim", {}).get("value"),
-                "colortemp": caps.get("light_temperature", {}).get("value"),
+                "dim": caps.get(self.cap_light_dim, {}).get("value"),
+                "colortemp": caps.get(self.cap_light_temp, {}).get("value"),
             }
         return None
 
@@ -283,9 +354,15 @@ class FanController:
             self.sequence_running = True
         try:
             log.info(f"[{self.name}] === FAN ON ===")
+            # In combined mode, source speed from current Arjan dim value
+            speed = self.default_speed
+            if self.cap_fan_dim:
+                current_dim = self.get_virtual_fan_dim()
+                speed = self.dim_to_speed(current_dim)
+                self.fan_dim_state = current_dim
             if self.ensure_l2_on():
                 for _ in range(3):
-                    if self.tuya_fan_on():
+                    if self.tuya_fan_on(speed):
                         log.info(f"[{self.name}] === FAN ON complete ===")
                         return
                     time.sleep(2)
@@ -293,6 +370,7 @@ class FanController:
             with self.lock:
                 self.sequence_running = False
                 self.sequence_end_time = time.time()
+            self._sync_after_sequence()
 
     def sequence_fan_off(self):
         with self.lock:
@@ -312,6 +390,7 @@ class FanController:
             with self.lock:
                 self.sequence_running = False
                 self.sequence_end_time = time.time()
+            self._sync_after_sequence()
 
     def sequence_light_on(self):
         with self.lock:
@@ -329,6 +408,7 @@ class FanController:
             with self.lock:
                 self.sequence_running = False
                 self.sequence_end_time = time.time()
+            self._sync_after_sequence()
 
     def sequence_light_off(self):
         with self.lock:
@@ -348,6 +428,7 @@ class FanController:
             with self.lock:
                 self.sequence_running = False
                 self.sequence_end_time = time.time()
+            self._sync_after_sequence()
 
     # --- Pollers ---
     def poll_fan(self):
@@ -356,30 +437,67 @@ class FanController:
                 current = self.get_virtual_fan_state()
                 if current is not None and current != self.fan_state:
                     old = self.fan_state
+                    # Sync-then-act: if Tuya already at the desired state, skip the sequence
+                    skip_sequence = False
+                    if old is not None and not self.sequence_running and self.is_online():
+                        dps = self.get_tuya_status()
+                        if dps is not None and bool(dps.get("1", False)) == current:
+                            log.info(f"[{self.name}] Fan: Arjan→{current}, Tuya already {current} (skip sequence, reconcile)")
+                            skip_sequence = True
+                            self.sync_virtual_to_tuya()
                     self.fan_state = current
                     if old is None:
                         log.info(f"[{self.name}] Fan initial: {'ON' if current else 'OFF'}")
-                    elif not self.sequence_running:
+                    elif not self.sequence_running and not skip_sequence:
                         if current:
                             threading.Thread(target=self.sequence_fan_on, daemon=True).start()
                         else:
                             threading.Thread(target=self.sequence_fan_off, daemon=True).start()
+
+                # Combined mode: react to fan-speed dim changes
+                if self.cap_fan_dim:
+                    current_dim = self.get_virtual_fan_dim()
+                    if current_dim is not None and current_dim != self.fan_dim_state:
+                        old_dim = self.fan_dim_state
+                        self.fan_dim_state = current_dim
+                        if old_dim is None:
+                            log.info(f"[{self.name}] Fan dim initial: {current_dim}")
+                        elif not self.sequence_running:
+                            if self.fan_state and self.is_online():
+                                # Fan is on — push speed change live
+                                speed = self.dim_to_speed(current_dim)
+                                log.info(f"[{self.name}] Fan dim {old_dim} → {current_dim} (speed {speed})")
+                                self.tuya_set_fan_speed(speed)
+                            elif not self.fan_state and current_dim > 0:
+                                # Fan is off — auto-turn-on (Arjan's auto-onoff doesn't fire for fan_speed)
+                                log.info(f"[{self.name}] Fan dim {old_dim} → {current_dim}: auto-turning on")
+                                self.set_virtual_fan(True)
+                                self.fan_state = True
+                                threading.Thread(target=self.sequence_fan_on, daemon=True).start()
             except Exception as e:
                 log.error(f"[{self.name}] Fan poll error: {e}")
             time.sleep(POLL_INTERVAL)
 
     def poll_light(self):
-        if not self.virtual_light_id:
+        if not self.has_light:
             return  # No light for this fan
         while True:
             try:
                 current = self.get_virtual_light_state()
                 if current is not None and current != self.light_state:
                     old = self.light_state
+                    # Sync-then-act: if Tuya already at the desired state, skip the sequence
+                    skip_sequence = False
+                    if old is not None and not self.sequence_running and self.is_online():
+                        dps = self.get_tuya_status()
+                        if dps is not None and bool(dps.get("15", False)) == current:
+                            log.info(f"[{self.name}] Light: Arjan→{current}, Tuya already {current} (skip sequence, reconcile)")
+                            skip_sequence = True
+                            self.sync_virtual_to_tuya()
                     self.light_state = current
                     if old is None:
                         log.info(f"[{self.name}] Light initial: {'ON' if current else 'OFF'}")
-                    elif not self.sequence_running:
+                    elif not self.sequence_running and not skip_sequence:
                         if current:
                             threading.Thread(target=self.sequence_light_on, daemon=True).start()
                         else:
@@ -416,25 +534,47 @@ class FanController:
             pass
         return None
 
+    def _sync_after_sequence(self):
+        """One-shot sync immediately after a sequence completes (bypasses grace period)."""
+        try:
+            if self.is_online():
+                self.sync_virtual_to_tuya()
+        except Exception as e:
+            log.error(f"[{self.name}] post-sequence sync error: {e}")
+
     def sync_virtual_to_tuya(self):
         """Sync virtual fan/light state to match the actual Tuya fan state."""
         dps = self.get_tuya_status()
         if dps is None:
             return
 
-        # DP 1 = fan power, DP 15 = light power
+        # DP 1 = fan power, DP 3 = fan speed, DP 15 = light power
         actual_fan = bool(dps.get("1", False))
         actual_light = bool(dps.get("15", False))
+        actual_speed = dps.get("3")
 
         if self.fan_state != actual_fan:
             log.info(f"[{self.name}] Sync: fan {self.fan_state} → {actual_fan} (Tuya)")
             self.set_virtual_fan(actual_fan)
             self.fan_state = actual_fan
 
-        if self.virtual_light_id and self.light_state != actual_light:
+        if self.has_light and self.light_state != actual_light:
             log.info(f"[{self.name}] Sync: light {self.light_state} → {actual_light} (Tuya)")
             self.set_virtual_light(actual_light)
             self.light_state = actual_light
+
+        # Combined mode: reverse-sync fan speed (Tuya DP3 → Arjan dim)
+        # Debounce: skip if we just wrote DP3 ourselves (Tuya may not have propagated yet)
+        if self.cap_fan_dim and isinstance(actual_speed, int) and 1 <= actual_speed <= 6:
+            if time.time() - self.last_fan_speed_write < 5.0:
+                pass  # recent write, our value is authoritative
+            else:
+                actual_dim = actual_speed / 6.0
+                current = self.fan_dim_state if self.fan_dim_state is not None else -1
+                if abs(actual_dim - current) > 0.05:
+                    log.info(f"[{self.name}] Sync: fan_dim {self.fan_dim_state} → {actual_dim:.3f} (Tuya speed {actual_speed})")
+                    self._homey_set_cap(self.virtual_fan_id, self.cap_fan_dim, actual_dim)
+                    self.fan_dim_state = actual_dim
 
     def monitor_online(self):
         while True:

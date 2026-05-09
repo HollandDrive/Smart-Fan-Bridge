@@ -1,8 +1,9 @@
 [
   {
     "name": "Office Fan",
-    "virtual_fan_id": "1c7bc5bf-c945-4982-8fe1-35f022d555e8",
-    "virtual_light_id": "d0324105-254f-409e-8978-f811495bbb98",
+    "mode": "combined",
+    "arjan_id": "d92458f2-91a9-459c-9efc-d17dbd9d1cf6",
+    "arjan_light_id": "1ff4f007-cf01-4d68-8487-a1f864ba1a32",
     "fan_motor_id": "b9de207d-2bf4-4759-8037-58de3cd9dbbf",
     "tuya_device_id": "bff3dbe507cd4046b8k2mx",
     "tuya_ip": "192.168.30.162",
@@ -15,8 +16,9 @@
   },
   {
     "name": "Guest Room Fan",
-    "virtual_fan_id": "c970c9f2-bcfe-49c5-a965-f3f66a4e340a",
-    "virtual_light_id": "a750ccd7-3ef6-41da-b674-df3172a77d96",
+    "mode": "combined",
+    "arjan_id": "884e25b0-76a2-46b3-80f4-57f9cdd6f52a",
+    "arjan_light_id": "3cc9290b-e1b6-4575-ba6b-5e2b89a7afb1",
     "fan_motor_id": "5050b31f-b4e0-4e00-8a95-9665582de359",
     "tuya_device_id": "bfc568ebdd6dad3313thoi",
     "tuya_ip": "192.168.30.168",
@@ -29,8 +31,8 @@
   },
   {
     "name": "Master Bedroom Fan",
-    "virtual_fan_id": "6db05510-bb2d-48ae-86dc-eebd70058fcf",
-    "virtual_light_id": null,
+    "mode": "combined",
+    "arjan_id": "60f975b8-4985-4ffa-9534-0ce3345d7236",
     "fan_motor_id": "1c0a2870-3fae-4582-ac36-aa9aeebc0b9d",
     "tuya_device_id": "bfa073c47cd105fd44zpxp",
     "tuya_ip": "192.168.30.115",

@@ -1,29 +1,23 @@
 #!/bin/bash
-# Smart Fan Bridge - Example startup script
-# Copy this to start_bridge.sh and fill in your values
+# Smart Fan Bridge — Example startup script
+# Copy this to start_bridge.sh and fill in your values.
+# Per-fan settings (Tuya keys, IPs, Zigbee addresses, Arjan device IDs) live in fans_config.json.
 
 export MQTT_HOST=localhost
+export MQTT_PORT=1883
+
 export HOMEY_URL=http://YOUR_HOMEY_IP:4859
-export HOMEY_TOKEN=your-homey-api-bearer-token
+export HOMEY_TOKEN=your-userId:your-sessionId:your-tokenSalt
 
-export VIRTUAL_FAN_DEVICE_ID=your-virtual-fan-homey-device-id
-export VIRTUAL_LIGHT_DEVICE_ID=your-virtual-light-homey-device-id
-export FAN_MOTOR_DEVICE_ID=your-tuya-fan-homey-device-id
-export TUYA_DEVICE_ID=your-tuya-device-id
-export TUYA_IP=your-fan-ip-address
-export TUYA_KEY='your-tuya-local-key'
-export TUYA_VERSION=3.3
+export CONFIG_FILE=/root/fans_config.json
 
-export Z2M_SWITCH_IEEE=0xYOUR_SWITCH_IEEE_ADDRESS
-export Z2M_SWITCH_NWK=YOUR_NETWORK_ADDRESS
-export Z2M_L2_ENDPOINT=2
-
-export DEFAULT_FAN_SPEED=3
-export TUYA_BOOT_WAIT=5.0
-export TUYA_RETRY_INTERVAL=5.0
-export TUYA_MAX_RETRIES=8
-export FAN_MONITOR_INTERVAL=3.0
-export SEQUENCE_GRACE_PERIOD=10.0
+# Optional tuning (defaults shown)
 export POLL_INTERVAL=1.0
+export FAN_MONITOR_INTERVAL=2.0
+export FAN_OFFLINE_THRESHOLD=3
+export SEQUENCE_GRACE_PERIOD=10.0
+export TUYA_BOOT_WAIT=3.0
+export TUYA_RETRY_INTERVAL=3.0
+export TUYA_MAX_RETRIES=8
 
 python3 -u smart_fan_bridge.py

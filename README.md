@@ -21,49 +21,58 @@ This bridge solves all three problems:
 2. **TinyTuya local LAN control** — sub-second fan commands directly over your network, no Tuya cloud dependency
 3. **TCP port monitoring** — detects when the fan loses power (physical switch off) by watching for the WiFi module going offline, without any Zigbee polling that could crash the switch
 
-## Architecture
+## Architecture (v6 — Combined Arjan)
 
 ```
-Google Home → "Turn on the office fan"
+Google Home → "Set the office fan to 50%"
     ↓
-Homey (Virtual Fan Device) → state changes to ON
+Arjan virtual fan device (class=fan, capabilities: onoff + fan_speed)
     ↓
 Smart Fan Bridge (polls Homey API every 1s)
     ↓
-    ├─ Raw ZCL ON → Zigbee switch endpoint 2 (L2 relay clicks on)
+    ├─ Fan offline? Raw ZCL ON → Zigbee switch endpoint (L2 relay clicks on)
     ├─ Wait for Tuya WiFi module to boot
-    └─ TinyTuya → Fan ON + Speed 3 (direct LAN, <100ms)
+    └─ TinyTuya → DP1=true, DP3=3 (fan ON, speed 3) — or just DP3 if already on
 
 Google Home → "Turn on the office fan light"
     ↓
-Homey (Virtual Light Device) → state changes to ON
+Arjan virtual light device (class=light, capabilities: onoff + dim + light_temperature)
     ↓
-Smart Fan Bridge
-    ↓
-    ├─ Ensure L2 is on (raw ZCL if needed)
-    └─ TinyTuya → Light ON (DP 15)
+Smart Fan Bridge → Ensure L2 → TinyTuya → DP15=true (light ON)
 
-Physical button press → L2 off → Fan loses power
+Physical wall switch off → L2 cuts → Tuya loses power
     ↓
-Smart Fan Bridge (TCP monitor every 3s)
+Smart Fan Bridge (TCP monitor every 2s)
     ↓
-Fan IP:6668 unreachable (3 consecutive failures = ~9s)
+Fan IP:6668 unreachable (3 consecutive failures, ~6s) → grace period after sequences
     ↓
-Reset Virtual Fan + Virtual Light to OFF → Voice commands work again
+Reset Arjan fan + light to OFF (Google Home reflects it)
 ```
 
 ### Key behaviors
 
-- **Fan and light are independent** — light stays on when fan motor is off, and vice versa
-- **L2 stays powered** if either fan or light is active — only cuts L2 when both are off
-- **Brightness and color temperature** sync from the Homey Tuya device to TinyTuya automatically
+- **Auto-turn-on** — setting fan_speed while fan is off automatically turns the fan on at the new speed
+- **Two-way state sync** — Tuya state changes (physical remote, app) reflect back to Arjan within ~3s
+- **Sync-then-act** — before sending Tuya commands, bridge checks if Tuya already matches the desired state (skip no-ops, fix stale Arjan state)
+- **Post-sequence sync** — immediately after any sequence, the bridge re-reads Tuya to update Arjan state
+- **DP3 write debounce** — 5s window after writing fan speed, reverse-sync skips to avoid race conditions
+- **Color temperature inversion** — Tuya FP9805 uses opposite polarity to Homey (DP17=0 is warm, 100 is cool); bridge inverts automatically
+- **Independent L2 management** — L2 stays powered if either fan or light is on; only cuts when both are off
+
+## Why Arjan virtual_switch (and not Homey's built-in virtual)?
+
+Homey's built-in `virtualsocket` driver is locked to `onoff` only — no way to add `fan_speed` or sub-capabilities. The community **Virtual Devices** app by Arjan Kranenburg lets you pair virtual devices with arbitrary class + capability combinations, which is required for:
+
+- `class=fan` + `fan_speed` capability → Google's FanSpeed trait (voice says "fan speed" not "brightness")
+- `class=light` + `dim` + `light_temperature` → Google's Brightness + ColorTemperature traits
+- Auto on-off semantics for `dim` (kept for compatibility)
 
 ## Requirements
 
 - **Zigbee2MQTT** with an MQTT broker (Mosquitto)
 - **Tuya WiFi ceiling fan** (tested with Point One / TAIDE FP9805)
 - **Tuya TS0004 Zigbee switch** (or similar multi-gang switch)
-- **Homey Self-Hosted** with a virtual fan device
+- **Homey Self-Hosted** with the Virtual Devices (Arjan Kranenburg) community app installed
 - **Python 3.9+** with `paho-mqtt` and `tinytuya`
 
 ## Setup
@@ -75,86 +84,116 @@ pip install tinytuya
 python -m tinytuya wizard
 ```
 
-You'll need a [Tuya IoT developer account](https://iot.tuya.com) (free) to pull device keys. This is a one-time setup.
+You'll need a [Tuya IoT developer account](https://iot.tuya.com) (free) to pull device keys. One-time setup; keys don't expire unless devices are re-paired in Smart Life.
 
 ### 2. Find your Zigbee switch network address
 
-In the Zigbee2MQTT frontend, go to your switch device → About → look for the network address (nwkAddr). You'll also need the IEEE address.
+In the Zigbee2MQTT frontend, go to your switch device → About → look for the network address (`nwkAddr`). You'll also need the IEEE address.
 
-### 3. Create Virtual Devices in Homey
+### 3. Pair Arjan virtual devices in Homey
 
-Enable Virtual Devices under Homey → Settings → Experiments, then create:
+Install the **Virtual Devices** community app by Arjan Kranenburg, then pair one device per fan:
 
-1. **Virtual Socket** named "Office Fan" with `virtualClass: fan` — for Google Home fan on/off
-2. **Virtual Socket** named "Office Fan Light" with `virtualClass: light` — for Google Home light on/off
+**Per fan:**
+- Class: **Fan**
+- Capabilities: **On/Off**, **Fan Speed**
 
-Note both device IDs from the Homey API. You'll also need the Tuya fan device ID from Homey (the real Tuya device, not the virtual ones) for brightness/color temp syncing.
+**Per light** (skip if no light installed):
+- Class: **Light**
+- Capabilities: **On/Off**, **Dimmable**, **Light Temperature**
 
-### 4. Configure environment variables
+Note the device IDs from Homey API — you'll need them for `fans_config.json`.
 
-Copy `start_bridge.sh.example` to `start_bridge.sh` and fill in your values:
+### 4. Configure `fans_config.json`
+
+Copy the example below and customize. **Important:** keep this file out of version control if possible (contains Tuya local keys).
+
+```json
+[
+  {
+    "name": "Office Fan",
+    "mode": "combined",
+    "arjan_id": "YOUR-ARJAN-FAN-DEVICE-UUID",
+    "arjan_light_id": "YOUR-ARJAN-LIGHT-DEVICE-UUID",
+    "fan_motor_id": null,
+    "tuya_device_id": "your-tuya-device-id",
+    "tuya_ip": "192.168.x.x",
+    "tuya_key": "your-local-key",
+    "tuya_version": 3.3,
+    "z2m_ieee": "0xYOUR_SWITCH_IEEE",
+    "z2m_nwk": 12345,
+    "z2m_endpoint": 2,
+    "default_speed": 3
+  }
+]
+```
+
+Per-fan fields:
+- `mode`: `"combined"` for the v6 architecture (Arjan virtual_switch with fan_speed); `"split"` for legacy (Homey virtualsocket)
+- `arjan_id`: Arjan virtual fan device UUID (combined mode only)
+- `arjan_light_id`: Arjan virtual light device UUID (optional — omit for fans without lights)
+- `fan_motor_id`: Tuya driver device UUID (legacy split mode only; optional in combined mode)
+- `tuya_device_id`, `tuya_ip`, `tuya_key`, `tuya_version`: TinyTuya local connection
+- `z2m_ieee`, `z2m_nwk`, `z2m_endpoint`: Zigbee switch identification + relay endpoint
+- `default_speed`: fallback fan speed (1-6) when bridge can't read current Arjan fan_speed
+
+### 5. Configure environment variables
+
+Copy `start_bridge.sh.example` to `start_bridge.sh` and fill in:
 
 ```bash
 export MQTT_HOST=localhost
 export HOMEY_URL=http://YOUR_HOMEY_IP:4859
 export HOMEY_TOKEN=your-homey-api-token
-export VIRTUAL_FAN_DEVICE_ID=your-virtual-fan-device-id
-export VIRTUAL_LIGHT_DEVICE_ID=your-virtual-light-device-id
-export FAN_MOTOR_DEVICE_ID=your-tuya-fan-device-id-in-homey
-export TUYA_DEVICE_ID=your-tuya-device-id
-export TUYA_IP=your-fan-ip
-export TUYA_KEY=your-tuya-local-key
-export TUYA_VERSION=3.3
-export Z2M_SWITCH_IEEE=0xYOUR_SWITCH_IEEE
-export Z2M_SWITCH_NWK=YOUR_NETWORK_ADDRESS
-export DEFAULT_FAN_SPEED=3
+export CONFIG_FILE=/root/fans_config.json
 ```
 
-### 5. Install as a systemd service
+### 6. Install as a systemd service
 
 ```bash
-sudo cp office-fan-bridge.service /etc/systemd/system/
+sudo cp smart-fan-bridge.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable office-fan-bridge
-sudo systemctl start office-fan-bridge
+sudo systemctl enable smart-fan-bridge
+sudo systemctl start smart-fan-bridge
 ```
 
-### 6. Add the Virtual Fan to Google Home
+### 7. Sync devices in Google Home
 
-Sync devices in Google Home. The virtual fan will appear as a controllable device. Add it to the appropriate room.
+Voice phrases that work after sync:
+- `"Set the office fan to 30 percent"` → fan_speed=0.3 → DP3=2
+- `"Increase the office fan"` → relative bump, FanSpeed trait
+- `"Turn on the office fan light"` → DP15=true (with L2 on if needed)
+- `"Set the office fan light to warm"` → DP17 (inverted)
 
 ## Configuration
+
+### Per-fan config (`fans_config.json`)
+
+See section 4 above for full schema.
+
+### Bridge environment variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MQTT_HOST` | MQTT broker host | `localhost` |
 | `MQTT_PORT` | MQTT broker port | `1883` |
-| `HOMEY_URL` | Homey API URL | `http://192.168.30.10:4859` |
-| `HOMEY_TOKEN` | Homey API bearer token | — |
-| `VIRTUAL_FAN_DEVICE_ID` | Homey virtual fan device ID | — |
-| `VIRTUAL_LIGHT_DEVICE_ID` | Homey virtual light device ID | — |
-| `FAN_MOTOR_DEVICE_ID` | Homey Tuya fan device ID (for dim/colortemp) | — |
-| `TUYA_DEVICE_ID` | Tuya device ID (from tinytuya wizard) | — |
-| `TUYA_IP` | Fan's LAN IP address | — |
-| `TUYA_KEY` | Tuya local encryption key | — |
-| `TUYA_VERSION` | Tuya protocol version | `3.3` |
-| `Z2M_SWITCH_IEEE` | Zigbee switch IEEE address | — |
-| `Z2M_SWITCH_NWK` | Zigbee switch network address | — |
-| `Z2M_L2_ENDPOINT` | Switch endpoint for fan circuit | `2` |
-| `DEFAULT_FAN_SPEED` | Fan speed on turn-on (1-6) | `3` |
-| `TUYA_BOOT_WAIT` | Seconds to wait for WiFi boot | `5.0` |
-| `TUYA_RETRY_INTERVAL` | Seconds between TinyTuya retries | `5.0` |
-| `TUYA_MAX_RETRIES` | Max TinyTuya connection attempts | `8` |
-| `FAN_MONITOR_INTERVAL` | Seconds between TCP checks | `3.0` |
-| `SEQUENCE_GRACE_PERIOD` | Ignore offline during sequence | `10.0` |
+| `HOMEY_URL` | Homey local API URL | `http://192.168.30.10:4859` |
+| `HOMEY_TOKEN` | Homey API bearer token (`<userId>:<sessionId>:<tokenSalt>`) | — |
+| `CONFIG_FILE` | Path to fans_config.json | `/root/fans_config.json` |
+| `POLL_INTERVAL` | Homey API poll interval (s) | `1.0` |
+| `FAN_MONITOR_INTERVAL` | Tuya TCP probe interval (s) | `2.0` |
+| `FAN_OFFLINE_THRESHOLD` | Consecutive failures before marking offline | `3` |
+| `SEQUENCE_GRACE_PERIOD` | Skip offline detection for N seconds after a sequence (s) | `10.0` |
+| `TUYA_BOOT_WAIT` | Initial wait after L2 power-on before retrying TinyTuya (s) | `3.0` |
+| `TUYA_RETRY_INTERVAL` | Seconds between TinyTuya boot-wait retries | `3.0` |
+| `TUYA_MAX_RETRIES` | Max TinyTuya boot-wait retries | `8` |
 
 ## Technical Details
 
 ### Why raw ZCL?
 
 The Tuya TS0004 (`_TZ3000_ewgtuk8o`) has a firmware deficiency:
-
-- **Endpoints 2-4** accept genOnOff commands but don't support attribute reads or reporting
+- Endpoints 2-4 accept genOnOff commands but don't support attribute reads or reporting
 - Physical button presses send Tuya profile 4098 (manufacturer-specific) instead of standard profile 260
 - Zigbee2MQTT ignores profile 4098 messages, causing permanent state desync
 - Flooding the device with failed read/configReport requests crashes its Zigbee stack
@@ -163,7 +202,7 @@ Raw ZCL via `bridge/request/action` with explicit `network_address` bypasses all
 
 ### Why TinyTuya instead of Tuya Cloud?
 
-- **5-20x faster** — direct LAN TCP vs cloud round-trip
+- **5-20× faster** — direct LAN TCP vs cloud round-trip
 - **No cloud dependency** — works even if Tuya servers are down
 - **Instant offline detection** — TCP connection drop = power loss
 - **Local key never expires** — works indefinitely after one-time setup
@@ -174,7 +213,17 @@ Raw ZCL via `bridge/request/action` with explicit `network_address` bypasses all
 - These error responses overload the device's Zigbee stack, causing relay resets
 - TCP monitoring is completely independent of Zigbee — no side effects
 
-## DPS Mapping (Point One / TAIDE FP9805 fans)
+### Why fan_speed and not dim?
+
+When the Arjan virtual fan device exposes `dim` (0..1), Google Home's cloud integration maps it to the **Brightness** trait — voice says "setting brightness to 30%". Switching to `fan_speed` triggers Google's **FanSpeed** trait — voice says "setting fan speed to 30%" and unlocks "increase / decrease" commands.
+
+### Sync race fix (v6)
+
+The bridge writes Tuya DP3 in one thread (poll_fan handler) while monitor_online runs sync_virtual_to_tuya in another. They can race: bridge writes DP3=2, sync immediately reads Tuya status which still shows DP3=5 (write hadn't propagated), sync "corrects" Arjan dim back to 0.83 — undoing the user's command.
+
+Fix: 5-second debounce on reverse-sync after any DP3 write. Sync skips during that window; the user's value is authoritative.
+
+## Tuya DPS Mapping (Point One / TAIDE FP9805)
 
 | DP | Type | Description | Values |
 |----|------|-------------|--------|
@@ -183,8 +232,8 @@ Raw ZCL via `bridge/request/action` with explicit `network_address` bypasses all
 | 3 | int | Fan speed | 1-6 |
 | 8 | enum | Direction | `"forward"`, `"reverse"` |
 | 15 | bool | Light power | `True`/`False` |
-| 16 | int | Light brightness | 10-1000 |
-| 17 | int | Color temperature | 0-1000 |
+| 16 | int | Light brightness | 0-100 (even integers) |
+| 17 | int | Color temperature | 0-100 (**0=warm, 100=cool** — inverted vs Homey convention) |
 | 22 | enum | Timer | `"off"`, ... |
 
 ## Tested Hardware
@@ -193,6 +242,17 @@ Raw ZCL via `bridge/request/action` with explicit `network_address` bypasses all
 - **Switch**: Tuya TS0004 (`_TZ3000_ewgtuk8o`) 4-gang with neutral
 - **Coordinator**: Sonoff Dongle Plus V2 (Ember/EZSP)
 - **Platform**: Homey Self-Hosted on Proxmox LXC (Debian)
+- **Virtual Devices app**: `com.arjankranenburg.virtual` (Homey community)
+
+## Upgrade from v5
+
+If migrating from v5 (split mode):
+
+1. Pair new Arjan virtual fan + light devices per [step 3](#3-pair-arjan-virtual-devices-in-homey)
+2. In `fans_config.json`, add `mode: "combined"`, `arjan_id`, `arjan_light_id` per fan; remove `virtual_fan_id`/`virtual_light_id`
+3. Restart the bridge — the new code keeps backwards compatibility (split mode still works for unmigrated entries)
+4. Once tested, delete the old virtualsocket fan triggers and Tuya driver devices in Homey
+5. Update any flows that reference the old device IDs
 
 ## License
 
